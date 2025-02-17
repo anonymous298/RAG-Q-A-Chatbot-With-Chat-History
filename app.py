@@ -71,31 +71,43 @@ def initialize_qa_prompt():
 st.session_state.store = {}
 
 def get_session_memory(session_id: str) -> BaseChatMessageHistory:
+
     if session_id not in st.session_state.store:
-        st.session_state.store[session_id] = ChatMessageHistory()
+        st.session_state.store[session_id] = ChatMessageHistory() 
 
-    else:
-        return st.session_state.store[session_id]
+    return st.session_state.store[session_id]   
 
-chat_session_name = st.text_input('session name')
+st.session_state.chat_session_name = st.text_input('session name')
 
-uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
+if not st.session_state.chat_session_name:
+    st.error("Please enter a session name before proceeding.")
+
+uploaded_file = st.file_uploader("Choose PDF files", type=["pdf"], accept_multiple_files=True)
 
 if st.button('Load'):
     if uploaded_file is not None:
-        # Save uploaded file temporarily
-        with open("temp.pdf", "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        if "documents" not in st.session_state:
+            st.session_state.documents = []
 
-        # Load the PDF using LangChain's PyPDFLoader
-        st.session_state.loader = PyPDFLoader("temp.pdf")
-        st.session_state.documents = st.session_state.loader.load()
+        # Ensure 'temp_storage' directory exists
+        if not os.path.exists("temp_storage"):
+            os.makedirs("temp_storage")
 
-    st.session_state.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        # Save files correctly
+        for file in uploaded_file:
+            file_path = os.path.join("temp_storage", file.name)
+            with open(file_path, "wb") as f:
+                f.write(file.getvalue())
+
+            loader = PyPDFLoader(file_path)  # Use the correct file path
+            docs = loader.load()
+            st.session_state.documents.extend(docs)
+
+    st.session_state.text_splitter = RecursiveCharacterTextSplitter(chunk_size=5000, chunk_overlap=500)
     st.session_state.final_documents = st.session_state.text_splitter.split_documents(st.session_state.documents)
 
     st.session_state.embedding = OllamaEmbeddings(model='mxbai-embed-large:335m')
-    st.session_state.vectordb = Chroma.from_documents(documents=st.session_state.final_documents, embedding = st.session_state.embedding, persist_directory=None)
+    st.session_state.vectordb = Chroma.from_documents(documents=st.session_state.final_documents, embedding = st.session_state.embedding, persist_directory="db_storage")
 
     st.session_state.llm = ChatOllama(model='llama3.2:3b')
     st.session_state.retriever = st.session_state.vectordb.as_retriever()
@@ -114,7 +126,7 @@ if st.button('Load'):
 
     st.session_state.rag_chain = create_retrieval_chain(st.session_state.history_aware_retriever, st.session_state.document_chain)
 
-    st.session_state.runnable = runnable = RunnableWithMessageHistory(
+    st.session_state.runnable = RunnableWithMessageHistory(
         st.session_state.rag_chain,
         get_session_memory,
         input_messages_key='input',
@@ -124,11 +136,11 @@ if st.button('Load'):
 
 user_input = st.text_input('Enter what you want to ask...')
 
-if user_input:
+if user_input.strip():
     if "runnable" in st.session_state and st.session_state.runnable is not None:
         response = st.session_state.runnable.invoke(
-            {"input": f"{user_input}"},
-            config={'configurable': {'session_id': chat_session_name}}
+            {"input": user_input},
+            config={'configurable': {'session_id': st.session_state.chat_session_name}}
         )
 
         with st.chat_message("user", avatar="👤"):
